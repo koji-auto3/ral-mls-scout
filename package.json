@@ -1,0 +1,28 @@
+{
+  "name": "ral-mls-scout",
+  "version": "1.0.0",
+  "description": "Assisted Living MLS Deal Finder",
+  "scripts": {
+    "dev": "next dev -p 3004",
+    "build": "next build",
+    "start": "next start -p 3004",
+    "setup-db": "ts-node src/scripts/setup-db.ts"
+  },
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "next": "14.0.0",
+    "typescript": "^5",
+    "@types/react": "^18",
+    "@types/react-dom": "^18",
+    "@types/node": "^20",
+    "tailwindcss": "^3.3.0",
+    "autoprefixer": "^10.4.14",
+    "postcss": "^8.4.24",
+    "better-sqlite3": "^9.0.0",
+    "@types/better-sqlite3": "^7.6.5"
+  },
+  "devDependencies": {
+    "ts-node": "^10.9.1"
+  }
+}
