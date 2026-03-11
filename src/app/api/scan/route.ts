@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { initDb, getDb, getAllCities, addMatch, getSetting } from "@/lib/db";
+import { initDb, getAllCities, addMatch, getSetting } from "@/lib/db";
 import { scanCity } from "@/lib/scanner";
 import { scoreDescription } from "@/lib/scorer";
 import { sendTelegramAlert } from "@/lib/notifier";
@@ -7,7 +7,6 @@ import { sendTelegramAlert } from "@/lib/notifier";
 export async function POST() {
   try {
     initDb();
-    const db = getDb();
 
     const cities = getAllCities().filter((c) => c.active === 1);
 
@@ -69,33 +68,13 @@ export async function POST() {
           }
         }
 
-        // Update city last_scanned
-        const completedAt = new Date().toISOString();
-        db.prepare(
-          "UPDATE cities SET last_scanned = ?, listing_count = ? WHERE id = ?"
-        ).run(completedAt, listings.length, city.id);
-
-        // Log scan
-        db.prepare(
-          `INSERT INTO scan_log (city_id, listings_scanned, matches_found, started_at, completed_at)
-           VALUES (?, ?, ?, ?, ?)`
-        ).run(
-          city.id,
-          listings.length,
-          listings.filter(
-            (l) =>
-              scoreDescription(l.description).score === "HIGH" ||
-              scoreDescription(l.description).score === "MEDIUM"
-          ).length,
-          startedAt,
-          completedAt
-        );
+        // Update city last_scanned in store
+        if (city.id !== undefined) {
+          city.last_scanned = new Date().toISOString();
+          city.listing_count = listings.length;
+        }
       } catch (error) {
         console.error(`Scan error for ${city.name}:`, error);
-        db.prepare(
-          `INSERT INTO scan_log (city_id, error, started_at, completed_at)
-           VALUES (?, ?, ?, ?)`
-        ).run(city.id, String(error), new Date().toISOString(), new Date().toISOString());
       }
     }
 

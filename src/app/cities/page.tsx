@@ -16,6 +16,8 @@ export default function CitiesPage() {
   const [cities, setCities] = useState<City[]>([]);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [importResult, setImportResult] = useState<string | null>(null);
   const [formData, setFormData] = useState({
     name: "",
     state: "",
@@ -67,6 +69,34 @@ export default function CitiesPage() {
     }
   }
 
+  async function handleCSVImport(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setImporting(true);
+    setImportResult(null);
+
+    const form = new FormData();
+    form.append("file", file);
+    if (cities[0]) form.append("city_id", String(cities[0].id));
+
+    try {
+      const res = await fetch("/api/import", { method: "POST", body: form });
+      const data = await res.json();
+      if (data.success) {
+        setImportResult(`✅ Imported ${data.listingsProcessed} listings → ${data.matchesFound} matches found`);
+        await fetchCities();
+      } else {
+        setImportResult(`❌ ${data.error}`);
+      }
+    } catch {
+      setImportResult("❌ Import failed");
+    } finally {
+      setImporting(false);
+      e.target.value = "";
+    }
+  }
+
   async function handleDeleteCity(id: number) {
     if (!confirm("Delete this city?")) return;
 
@@ -80,15 +110,72 @@ export default function CitiesPage() {
 
   return (
     <div className="p-8" style={{ backgroundColor: "var(--background)" }}>
-      <div className="flex justify-between items-center mb-8">
+      <div className="flex justify-between items-start mb-8">
         <h1 className="text-4xl font-bold">Target Cities</h1>
-        <button
-          onClick={() => setShowModal(true)}
-          disabled={cities.length >= 5}
-          style={{ opacity: cities.length >= 5 ? 0.5 : 1 }}
+        <div className="flex gap-3 items-center">
+          {/* Redfin CSV Import */}
+          <label
+            className="cursor-pointer px-4 py-3 rounded-lg text-sm font-semibold transition-all"
+            style={{
+              backgroundColor: "var(--secondary)",
+              color: importing ? "var(--text-tertiary)" : "var(--foreground)",
+              border: "1px solid var(--border)",
+              opacity: importing ? 0.6 : 1,
+            }}
+          >
+            {importing ? "Importing..." : "⬆ Import Redfin CSV"}
+            <input
+              type="file"
+              accept=".csv"
+              className="hidden"
+              onChange={handleCSVImport}
+              disabled={importing}
+            />
+          </label>
+          <button
+            onClick={() => setShowModal(true)}
+            disabled={cities.length >= 5}
+            style={{ opacity: cities.length >= 5 ? 0.5 : 1 }}
+          >
+            + Add City
+          </button>
+        </div>
+      </div>
+
+      {importResult && (
+        <div
+          className="mb-4 p-4 rounded-lg text-sm"
+          style={{
+            backgroundColor: "var(--surface-elevated)",
+            color: importResult.startsWith("✅") ? "var(--gold)" : "#ef4444",
+            border: "1px solid var(--border)",
+          }}
         >
-          + Add City
-        </button>
+          {importResult}
+        </div>
+      )}
+
+      {/* How to get Redfin CSV */}
+      <div
+        className="mb-6 p-4 rounded-lg text-sm"
+        style={{
+          backgroundColor: "var(--surface-elevated)",
+          border: "1px solid var(--border)",
+          color: "var(--text-secondary)",
+        }}
+      >
+        <strong style={{ color: "var(--gold)" }}>📥 How to import real listings:</strong>
+        {" "}Go to{" "}
+        <a
+          href="https://www.redfin.com"
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{ color: "var(--gold)" }}
+        >
+          redfin.com
+        </a>
+        , search your target city, filter by 4+ beds, then click{" "}
+        <strong>Download All</strong> (bottom of results). Upload that CSV here.
       </div>
 
       {cities.length >= 5 && (

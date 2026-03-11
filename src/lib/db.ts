@@ -1,79 +1,38 @@
-import Database from "better-sqlite3";
-import path from "path";
-import fs from "fs";
+// In-memory store pinned to global so Next.js hot-reloads don't wipe it
 
-const dbDir = path.join(process.cwd(), "data");
-if (!fs.existsSync(dbDir)) {
-  fs.mkdirSync(dbDir, { recursive: true });
+interface Store {
+  cities: Record<number, CityRecord>;
+  matches: Record<number, MatchRecord>;
+  settings: Record<string, string>;
+  nextCityId: number;
+  nextMatchId: number;
 }
 
-const dbPath = path.join(dbDir, "ral-scout.db");
+declare global {
+  // eslint-disable-next-line no-var
+  var __ralStore: Store | undefined;
+}
 
-let db: Database.Database | null = null;
+if (!global.__ralStore) {
+  global.__ralStore = {
+    cities: {},
+    matches: {},
+    settings: {},
+    nextCityId: 1,
+    nextMatchId: 1,
+  };
+}
 
-export function getDb(): Database.Database {
-  if (!db) {
-    db = new Database(dbPath);
-    db.pragma("journal_mode = WAL");
-  }
-  return db;
+const store = global.__ralStore;
+
+export function getDb(): any {
+  return { prepare: () => ({}) }; // Mock for compatibility
 }
 
 export function initDb(): void {
-  const database = getDb();
+  // In-memory, no initialization needed
 
-  database.exec(`
-    CREATE TABLE IF NOT EXISTS cities (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL,
-      state TEXT NOT NULL,
-      price_min INTEGER DEFAULT 100000,
-      price_max INTEGER DEFAULT 1500000,
-      active INTEGER DEFAULT 1,
-      last_scanned TEXT,
-      listing_count INTEGER DEFAULT 0,
-      created_at TEXT DEFAULT (datetime('now'))
-    );
-
-    CREATE TABLE IF NOT EXISTS matches (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      city_id INTEGER REFERENCES cities(id),
-      address TEXT NOT NULL,
-      city TEXT NOT NULL,
-      state TEXT NOT NULL,
-      price INTEGER,
-      bedrooms INTEGER,
-      bathrooms REAL,
-      sqft INTEGER,
-      listing_url TEXT,
-      source TEXT,
-      score TEXT CHECK(score IN ('HIGH','MEDIUM','LOW')),
-      matched_keywords TEXT,
-      ai_summary TEXT,
-      raw_description TEXT,
-      viewed INTEGER DEFAULT 0,
-      created_at TEXT DEFAULT (datetime('now'))
-    );
-
-    CREATE TABLE IF NOT EXISTS settings (
-      key TEXT PRIMARY KEY,
-      value TEXT
-    );
-
-    CREATE TABLE IF NOT EXISTS scan_log (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      city_id INTEGER,
-      listings_scanned INTEGER DEFAULT 0,
-      matches_found INTEGER DEFAULT 0,
-      started_at TEXT,
-      completed_at TEXT,
-      error TEXT
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_matches_city ON matches(city_id);
-    CREATE INDEX IF NOT EXISTS idx_matches_score ON matches(score);
-    CREATE INDEX IF NOT EXISTS idx_matches_created ON matches(created_at);
-  `);
+  // In-memory initialization (no database tables needed)
 }
 
 export interface CityRecord {
@@ -114,96 +73,75 @@ export interface SettingRecord {
 }
 
 export function getAllCities(): CityRecord[] {
-  const database = getDb();
-  return database.prepare("SELECT * FROM cities ORDER BY name ASC").all() as CityRecord[];
+  return Object.values(store.cities).sort((a, b) => a.name.localeCompare(b.name));
 }
 
 export function addCity(name: string, state: string, price_min: number, price_max: number): CityRecord {
-  const database = getDb();
-  const result = database
-    .prepare("INSERT INTO cities (name, state, price_min, price_max) VALUES (?, ?, ?, ?)")
-    .run(name, state, price_min, price_max);
-  return { id: result.lastInsertRowid as number, name, state, price_min, price_max, active: 1, last_scanned: null, listing_count: 0, created_at: new Date().toISOString() };
+  const id = store.nextCityId++;
+  const city: CityRecord = {
+    id,
+    name,
+    state,
+    price_min,
+    price_max,
+    active: 1,
+    last_scanned: null,
+    listing_count: 0,
+    created_at: new Date().toISOString(),
+  };
+  store.cities[id] = city;
+  return city;
 }
 
 export function deleteCity(id: number): void {
-  const database = getDb();
-  database.prepare("DELETE FROM cities WHERE id = ?").run(id);
-  database.prepare("DELETE FROM matches WHERE city_id = ?").run(id);
+  delete store.cities[id];
+  Object.keys(store.matches).forEach((key) => {
+    if (store.matches[parseInt(key)].city_id === id) {
+      delete store.matches[parseInt(key)];
+    }
+  });
 }
 
 export function getCityCount(): number {
-  const database = getDb();
-  const result = database.prepare("SELECT COUNT(*) as count FROM cities WHERE active = 1").get() as { count: number };
-  return result.count;
+  return Object.values(store.cities).filter((c) => c.active === 1).length;
 }
 
 export function getAllMatches(cityId?: number, score?: string, limit: number = 100): MatchRecord[] {
-  const database = getDb();
-  let query = "SELECT * FROM matches WHERE 1=1";
-  const params: (number | string)[] = [];
+  let matches = Object.values(store.matches);
 
   if (cityId) {
-    query += " AND city_id = ?";
-    params.push(cityId);
+    matches = matches.filter((m) => m.city_id === cityId);
   }
   if (score) {
-    query += " AND score = ?";
-    params.push(score);
+    matches = matches.filter((m) => m.score === score);
   }
 
-  query += " ORDER BY created_at DESC LIMIT ?";
-  params.push(limit);
-
-  return database.prepare(query).all(...params) as MatchRecord[];
+  return matches
+    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+    .slice(0, limit);
 }
 
 export function addMatch(match: Omit<MatchRecord, "id" | "created_at">): MatchRecord {
-  const database = getDb();
-  const result = database
-    .prepare(
-      `INSERT INTO matches (city_id, address, city, state, price, bedrooms, bathrooms, sqft, listing_url, source, score, matched_keywords, ai_summary, raw_description)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    )
-    .run(
-      match.city_id,
-      match.address,
-      match.city,
-      match.state,
-      match.price,
-      match.bedrooms,
-      match.bathrooms,
-      match.sqft,
-      match.listing_url,
-      match.source,
-      match.score,
-      match.matched_keywords,
-      match.ai_summary,
-      match.raw_description
-    );
-
-  return {
+  const id = store.nextMatchId++;
+  const fullMatch: MatchRecord = {
     ...match,
-    id: result.lastInsertRowid as number,
+    id,
     created_at: new Date().toISOString(),
   };
+  store.matches[id] = fullMatch;
+  return fullMatch;
 }
 
 export function getSetting(key: string): string | null {
-  const database = getDb();
-  const result = database.prepare("SELECT value FROM settings WHERE key = ?").get(key) as { value: string } | undefined;
-  return result?.value || null;
+  return store.settings[key] || null;
 }
 
 export function setSetting(key: string, value: string): void {
-  const database = getDb();
-  database.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)").run(key, value);
+  store.settings[key] = value;
 }
 
 export function getAllSettings(): Record<string, string> {
-  const database = getDb();
-  const rows = database.prepare("SELECT key, value FROM settings").all() as { key: string; value: string }[];
-  return Object.fromEntries(rows.map((row) => [row.key, row.value]));
+  return { ...store.settings };
 }
 
 export function getMatchStats(): {
@@ -212,24 +150,11 @@ export function getMatchStats(): {
   medium: number;
   low: number;
 } {
-  const database = getDb();
-  const result = database
-    .prepare(
-      `
-    SELECT
-      COUNT(*) as total,
-      SUM(CASE WHEN score = 'HIGH' THEN 1 ELSE 0 END) as high,
-      SUM(CASE WHEN score = 'MEDIUM' THEN 1 ELSE 0 END) as medium,
-      SUM(CASE WHEN score = 'LOW' THEN 1 ELSE 0 END) as low
-    FROM matches
-  `
-    )
-    .get() as { total: number; high: number; medium: number; low: number };
-
+  const matches = Object.values(store.matches);
   return {
-    total: result.total || 0,
-    high: result.high || 0,
-    medium: result.medium || 0,
-    low: result.low || 0,
+    total: matches.length,
+    high: matches.filter((m) => m.score === "HIGH").length,
+    medium: matches.filter((m) => m.score === "MEDIUM").length,
+    low: matches.filter((m) => m.score === "LOW").length,
   };
 }
