@@ -12,8 +12,10 @@ export default function SettingsPage() {
 
   // Keywords state
   const [keywords, setKeywords] = useState("");
+  const [savedKeywords, setSavedKeywords] = useState("");
   const [keywordsSaving, setKeywordsSaving] = useState(false);
   const [keywordsSaved, setKeywordsSaved] = useState(false);
+  const keywordsChanged = keywords !== savedKeywords;
   const [reprocessing, setReprocessing] = useState(false);
   const [reprocessResult, setReprocessResult] = useState<{
     processed: number;
@@ -47,6 +49,7 @@ export default function SettingsPage() {
       if (res.ok) {
         const data = await res.json();
         setKeywords(data.keywords || "");
+        setSavedKeywords(data.keywords || "");
       }
     } catch (error) {
       console.error("Failed to fetch keywords:", error);
@@ -87,6 +90,7 @@ export default function SettingsPage() {
         body: JSON.stringify({ keywords }),
       });
       if (res.ok) {
+        setSavedKeywords(keywords);
         setKeywordsSaved(true);
         setTimeout(() => setKeywordsSaved(false), 3000);
       }
@@ -194,15 +198,22 @@ export default function SettingsPage() {
 
           <button
             onClick={handleReprocess}
-            disabled={reprocessing}
+            disabled={reprocessing || keywordsChanged}
+            title={keywordsChanged ? "Save keywords first" : undefined}
             style={{
               backgroundColor: "var(--secondary)",
               color: "var(--foreground)",
-              opacity: reprocessing ? 0.7 : 1,
+              opacity: reprocessing || keywordsChanged ? 0.4 : 1,
+              cursor: keywordsChanged ? "not-allowed" : "pointer",
             }}
           >
             {reprocessing ? "Processing…" : "Re-process Listings"}
           </button>
+          {keywordsChanged && (
+            <span className="text-xs" style={{ color: "var(--text-tertiary)" }}>
+              Save keywords first
+            </span>
+          )}
 
           {reprocessResult && (
             <span className="text-sm" style={{ color: "var(--text-secondary)" }}>
