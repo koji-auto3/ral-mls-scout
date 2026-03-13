@@ -277,7 +277,7 @@ export async function POST(request: NextRequest) {
         raw_description: `${listing.bedrooms}bd/${listing.bathrooms}ba | ${listing.sqft.toLocaleString()} sqft | Built ${listing.yearBuilt} | ${listing.location}`,
         description_text: "",
         description_keywords: "[]",
-        enrich_status: "pending",
+        enrich_status: "",
         viewed: 0,
       });
 
