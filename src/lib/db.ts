@@ -4,7 +4,7 @@ import { createClient, Client } from "@libsql/client";
 
 let _client: Client | null = null;
 
-function getClient(): Client {
+export function getClient(): Client {
   if (!_client) {
     _client = createClient({
       url: process.env.TURSO_DATABASE_URL!,

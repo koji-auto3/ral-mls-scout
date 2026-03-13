@@ -30,45 +30,35 @@ const FETCH_HEADERS = {
   "Accept-Language": "en-US,en;q=0.9",
 };
 
-// ── RAL keywords (must match scorer.ts) ──────────────────────────────────────
+// ── RAL keywords — loaded from DB, fallback to defaults ─────────────────────
 
-const PRIMARY_KEYWORDS = [
+const PRIMARY_KEYWORDS_DEFAULT = [
   "assisted living", "memory care", "group home", "residential care",
   "board and care", "adult care", "senior care", "elder care",
-  "care facility", "care home", "ral ", " ral,",
+  "care facility", "care home", "ral",
 ];
 
-const SECONDARY_KEYWORDS = [
-  "efficiency unit", "efficiency units", "kitchenette", "kitchenettes",
-  "mother-in-law suite", "mother in law suite", "in-law suite", "in law suite",
-  "separate entrance", "private entrance", "separate living", "separate quarters",
-  "multiple units", "multi-unit", "duplex", "triplex", "fourplex", "quadplex",
-  "income producing", "income-producing", "currently rented", "tenant occupied",
-  "rental income", "investment property", "multi family", "multifamily",
-  "group living", "communal living", "shared living",
-  "ada compliant", "ada accessible", "wheelchair accessible", "handicap accessible",
-  "roll-in shower", "walk-in shower", "grab bars",
-  "multiple bedrooms", "6 bedroom", "7 bedroom", "8 bedroom", "9 bedroom", "10 bedroom",
-  "commercial kitchen", "institutional", "zoned for",
-  "adu", "accessory dwelling", "casita", "guest house", "guest suite",
-  "nursing", "caregiver", "live-in caregiver",
-];
+async function loadKeywords(db) {
+  try {
+    const r = await db.execute("SELECT value FROM settings WHERE key = 'keywords'");
+    if (r.rows.length > 0 && r.rows[0].value) {
+      const list = String(r.rows[0].value).split("\n").map((k) => k.trim().toLowerCase()).filter(Boolean);
+      if (list.length > 0) {
+        console.log(`  Loaded ${list.length} keywords from DB settings`);
+        return list;
+      }
+    }
+  } catch { /* fall through */ }
+  console.log(`  Using ${PRIMARY_KEYWORDS_DEFAULT.length} default keywords`);
+  return PRIMARY_KEYWORDS_DEFAULT;
+}
 
-function scoreDescription(text) {
+function scoreDescription(text, keywords) {
   if (!text) return { score: null, matchedKeywords: [] };
   const lower = text.toLowerCase();
-  const matched = [];
-
-  for (const kw of PRIMARY_KEYWORDS) {
-    if (lower.includes(kw)) matched.push(kw.trim());
-  }
-  for (const kw of SECONDARY_KEYWORDS) {
-    if (lower.includes(kw)) matched.push(kw.trim());
-  }
-
-  const hasPrimary = PRIMARY_KEYWORDS.some((kw) => lower.includes(kw));
+  const matched = keywords.filter((kw) => lower.includes(kw));
+  const hasPrimary = matched.some((kw) => PRIMARY_KEYWORDS_DEFAULT.includes(kw));
   const score = hasPrimary ? "HIGH" : matched.length >= 2 ? "MEDIUM" : matched.length === 1 ? "LOW" : null;
-
   return { score, matchedKeywords: [...new Set(matched)] };
 }
 
@@ -155,6 +145,7 @@ async function main() {
      LIMIT ${isFinite(limit) ? limit : 9999}`
   );
 
+  const keywords = await loadKeywords(db);
   const rows = result.rows;
   console.log(`\nRAL Scout Enricher — ${rows.length} listing(s) to process\n`);
 
@@ -181,7 +172,7 @@ async function main() {
       console.log("no description found");
       noDesc++;
     } else {
-      const { score: textScore, matchedKeywords } = scoreDescription(description);
+      const { score: textScore, matchedKeywords } = scoreDescription(description, keywords);
 
       const scoreRank = { HIGH: 3, MEDIUM: 2, LOW: 1 };
       const currentRank = scoreRank[match.score] ?? 0;
