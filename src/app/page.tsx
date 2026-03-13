@@ -55,7 +55,7 @@ export default function Dashboard() {
     try {
       const [statsRes, matchesRes] = await Promise.all([
         fetch("/api/stats"),
-        fetch("/api/matches?limit=500"),
+        fetch("/api/matches?limit=2000"),
       ]);
 
       if (statsRes.ok) {
