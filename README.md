@@ -42,7 +42,7 @@ This downloads all the software this project needs. Wait for it to finish.
 Type:
 
 ```bash
-npm run dev
+npm run build && npm run start
 ```
 
 You should see a message saying it's running on `http://localhost:3004`.
@@ -66,7 +66,7 @@ You should see the RAL Scout dashboard. Welcome!
 5. Set price range (optional, defaults to $100K–$1.5M)
 6. Click **Add City**
 
-Repeat this for up to 5 cities.
+Repeat for as many cities as you want.
 
 ### Step 6: Set Up Telegram Notifications
 
@@ -124,15 +124,9 @@ Properties with any high-priority keyword get flagged as **HIGH** and you get a 
 
 ---
 
-## Automatic Scanning
-
-Once set up, RAL Scout automatically scans at night (every 12 hours by default). You can also click **Scan All Cities Now** anytime to run a manual scan.
-
----
-
 ## API & Data
 
-All data is stored locally in a SQLite database. Nothing is sent to the cloud unless you enable Telegram notifications. Your settings and scan history are yours.
+All data is stored in a SQLite database at `data/ral-scout.db`. Nothing is sent to the cloud unless you enable Telegram notifications. Your settings and scan history are yours.
 
 ---
 
@@ -157,6 +151,12 @@ Make sure your bot token and chat ID are correct. Check that you're using the ri
 - Adjust price ranges per city in the Cities page
 - Review AI summaries to decide which properties to investigate
 - Click "View Listing" to go directly to the MLS listing
+
+---
+
+## Coming Soon
+
+- **Auto-scan scheduling**: Automatically scan for new listings every 12 hours (coming soon)
 
 ---
 

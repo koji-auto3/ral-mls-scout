@@ -3,8 +3,8 @@ import { initDb, getAllSettings, setSetting } from "@/lib/db";
 
 export async function GET() {
   try {
-    initDb();
-    const settings = getAllSettings();
+    await initDb();
+    const settings = await getAllSettings();
     return NextResponse.json(settings);
   } catch (error) {
     console.error("Settings GET error:", error);
@@ -17,7 +17,7 @@ export async function GET() {
 
 export async function POST(request: NextRequest) {
   try {
-    initDb();
+    await initDb();
 
     const body = await request.json();
     const { key, value } = body;
@@ -29,7 +29,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    setSetting(key, value);
+    await setSetting(key, value);
 
     return NextResponse.json({ success: true });
   } catch (error) {

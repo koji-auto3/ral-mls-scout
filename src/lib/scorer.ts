@@ -14,9 +14,11 @@ const PRIMARY_KEYWORDS = [
 ];
 
 const SECONDARY_KEYWORDS = [
+  // Fire safety
   "fire suppression",
   "commercial sprinkler",
   "sprinkler system",
+  // Accessibility
   "ADA compliant",
   "ADA bathroom",
   "handicap accessible",
@@ -31,11 +33,33 @@ const SECONDARY_KEYWORDS = [
   "wheelchair accessible",
   "wheelchair ramp",
   "no-step entry",
+  // Kitchen
   "commercial kitchen",
   "licensed kitchen",
-  "caretaker suite",
+  // Units / layout signals
+  "efficiency unit",
+  "efficiency apartment",
+  "studio unit",
+  "studio apartment",
   "in-law suite",
+  "in-law unit",
+  "mother-in-law suite",
+  "mother in law suite",
+  "accessory dwelling",
+  "ADU",
+  "guest suite",
+  "caretaker suite",
+  "caretaker unit",
   "multigenerational",
+  "multi-generational",
+  "separate entrance",
+  "private entrance",
+  "kitchenette",
+  "income producing",
+  "income-producing",
+  "multiple units",
+  "multiple tenants",
+  "currently rented",
 ];
 
 export function scoreDescription(

@@ -18,6 +18,7 @@ export default function CitiesPage() {
   const [showModal, setShowModal] = useState(false);
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState<string | null>(null);
+  const [selectedCityId, setSelectedCityId] = useState<number | null>(null);
   const [formData, setFormData] = useState({
     name: "",
     state: "",
@@ -28,6 +29,12 @@ export default function CitiesPage() {
   useEffect(() => {
     fetchCities();
   }, []);
+
+  useEffect(() => {
+    if (cities.length === 1) {
+      setSelectedCityId(cities[0].id);
+    }
+  }, [cities]);
 
   async function fetchCities() {
     try {
@@ -78,13 +85,20 @@ export default function CitiesPage() {
 
     const form = new FormData();
     form.append("file", file);
-    if (cities[0]) form.append("city_id", String(cities[0].id));
+
+    const cityId = cities.length === 1 ? cities[0].id : selectedCityId;
+    if (cityId) form.append("city_id", String(cityId));
 
     try {
       const res = await fetch("/api/import", { method: "POST", body: form });
       const data = await res.json();
       if (data.success) {
-        setImportResult(`✅ Imported ${data.listingsProcessed} listings → ${data.matchesFound} matches found`);
+        const base = `✅ Imported ${data.listingsProcessed} listings → ${data.matchesFound} matches found`;
+        if (data.enriching) {
+          setImportResult(`${base}. ⏳ Scanning listing descriptions in the background…`);
+        } else {
+          setImportResult(base);
+        }
         await fetchCities();
       } else {
         setImportResult(`❌ ${data.error}`);
@@ -113,29 +127,58 @@ export default function CitiesPage() {
       <div className="flex justify-between items-start mb-8">
         <h1 className="text-4xl font-bold">Target Cities</h1>
         <div className="flex gap-3 items-center">
+          {/* City selector for import (only when multiple cities) */}
+          {cities.length > 1 && (
+            <select
+              value={selectedCityId ?? ""}
+              onChange={(e) => setSelectedCityId(e.target.value ? Number(e.target.value) : null)}
+              className="px-3 py-3 rounded-lg text-sm"
+              style={{
+                backgroundColor: "var(--secondary)",
+                color: "var(--foreground)",
+                border: "1px solid var(--border)",
+              }}
+            >
+              <option value="">Select city for CSV…</option>
+              {cities.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name}, {c.state}
+                </option>
+              ))}
+            </select>
+          )}
+
           {/* Redfin CSV Import */}
-          <label
-            className="cursor-pointer px-4 py-3 rounded-lg text-sm font-semibold transition-all"
-            style={{
-              backgroundColor: "var(--secondary)",
-              color: importing ? "var(--text-tertiary)" : "var(--foreground)",
-              border: "1px solid var(--border)",
-              opacity: importing ? 0.6 : 1,
-            }}
-          >
-            {importing ? "Importing..." : "⬆ Import Redfin CSV"}
-            <input
-              type="file"
-              accept=".csv"
-              className="hidden"
-              onChange={handleCSVImport}
-              disabled={importing}
-            />
-          </label>
+          {cities.length === 0 ? (
+            <span
+              className="px-4 py-3 rounded-lg text-sm"
+              style={{ color: "var(--text-tertiary)", border: "1px solid var(--border)" }}
+            >
+              Add a city first before importing.
+            </span>
+          ) : (
+            <label
+              className="cursor-pointer px-4 py-3 rounded-lg text-sm font-semibold transition-all"
+              style={{
+                backgroundColor: "var(--secondary)",
+                color: importing ? "var(--text-tertiary)" : "var(--foreground)",
+                border: "1px solid var(--border)",
+                opacity: importing ? 0.6 : 1,
+              }}
+            >
+              {importing ? "Importing..." : "⬆ Import Redfin CSV"}
+              <input
+                type="file"
+                accept=".csv"
+                className="hidden"
+                onChange={handleCSVImport}
+                disabled={importing}
+              />
+            </label>
+          )}
+
           <button
             onClick={() => setShowModal(true)}
-            disabled={cities.length >= 5}
-            style={{ opacity: cities.length >= 5 ? 0.5 : 1 }}
           >
             + Add City
           </button>
@@ -177,18 +220,6 @@ export default function CitiesPage() {
         , search your target city, filter by 4+ beds, then click{" "}
         <strong>Download All</strong> (bottom of results). Upload that CSV here.
       </div>
-
-      {cities.length >= 5 && (
-        <div
-          className="mb-4 p-4 rounded-lg text-sm"
-          style={{
-            backgroundColor: "var(--surface-elevated)",
-            color: "var(--text-tertiary)",
-          }}
-        >
-          Maximum 5 cities reached
-        </div>
-      )}
 
       {loading ? (
         <p style={{ color: "var(--text-secondary)" }}>Loading...</p>

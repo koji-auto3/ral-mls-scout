@@ -1,12 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { initDb, getAllCities, addMatch, getSetting } from "@/lib/db";
-import { scoreDescription } from "@/lib/scorer";
 import { sendTelegramAlert } from "@/lib/notifier";
+import { enrichPendingMatches } from "@/lib/enricher";
 
-// Parses a Redfin CSV export and scores each listing
-// Redfin CSV columns: SALE TYPE, SOLD DATE, PROPERTY TYPE, ADDRESS, CITY,
-//   STATE OR PROVINCE, ZIP OR POSTAL CODE, PRICE, BEDS, BATHS, LOCATION,
-//   SQUARE FEET, ..., URL (BROWSER), SOURCE, MLS#, ...
+// ── Types ────────────────────────────────────────────────────────────────────
 
 interface ParsedListing {
   address: string;
@@ -18,114 +15,196 @@ interface ParsedListing {
   sqft: number;
   url: string;
   propertyType: string;
+  location: string; // Redfin neighbourhood/subdivision field
+  yearBuilt: number;
 }
 
+interface ScoreResult {
+  score: "HIGH" | "MEDIUM" | "LOW" | null;
+  matchedKeywords: string[];
+  summary: string;
+}
+
+// ── CSV Parser ───────────────────────────────────────────────────────────────
+
 function parseRedfinCSV(csvText: string): ParsedListing[] {
-  const lines = csvText.split("\n").filter((l) => l.trim());
-  
-  // Skip header and disclaimer lines
-  const dataLines = lines.filter(
-    (line) =>
-      !line.startsWith("SALE TYPE") &&
-      !line.startsWith('"In accordance') &&
-      line.length > 10
-  );
+  // Normalise line endings
+  const lines = csvText.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
 
-  return dataLines
+  // Find the header row
+  const headerIdx = lines.findIndex((l) => l.startsWith("SALE TYPE"));
+  if (headerIdx === -1) return [];
+
+  const headers = splitCSVLine(lines[headerIdx]).map((h) => h.trim().toUpperCase());
+
+  const col = (row: string[], name: string) => {
+    const idx = headers.indexOf(name);
+    return idx >= 0 ? (row[idx] || "").trim() : "";
+  };
+
+  return lines
+    .slice(headerIdx + 1)
+    .filter((l) => l.trim() && !l.startsWith('"In accordance'))
     .map((line) => {
-      // Handle quoted CSV fields
-      const cols: string[] = [];
-      let inQuotes = false;
-      let current = "";
+      const cols = splitCSVLine(line);
+      const priceRaw = col(cols, "PRICE").replace(/[^0-9]/g, "");
+      const sqftRaw = col(cols, "SQUARE FEET").replace(/[^0-9]/g, "");
 
-      for (const char of line) {
-        if (char === '"') {
-          inQuotes = !inQuotes;
-        } else if (char === "," && !inQuotes) {
-          cols.push(current.trim());
-          current = "";
-        } else {
-          current += char;
-        }
-      }
-      cols.push(current.trim());
-
-      const [
-        saleType, soldDate, propertyType, address, city, state, zip,
-        priceStr, bedsStr, bathsStr, location, sqftStr,
-        ...rest
-      ] = cols;
-
-      // URL is at index 20 (0-indexed)
-      const url = cols[20] || "";
+      // URL column header contains a long note — match by prefix
+      const urlIdx = headers.findIndex((h) => h.startsWith("URL"));
+      const url = urlIdx >= 0 ? (cols[urlIdx] || "").trim() : "";
 
       return {
-        address: address || "",
-        city: city || "",
-        state: state || "",
-        price: parseInt(priceStr?.replace(/[^0-9]/g, "") || "0") || 0,
-        bedrooms: parseInt(bedsStr || "0") || 0,
-        bathrooms: parseFloat(bathsStr || "0") || 0,
-        sqft: parseInt(sqftStr?.replace(/[^0-9]/g, "") || "0") || 0,
-        url: url || "",
-        propertyType: propertyType || "",
+        address: col(cols, "ADDRESS"),
+        city: col(cols, "CITY"),
+        state: col(cols, "STATE OR PROVINCE"),
+        price: parseInt(priceRaw) || 0,
+        bedrooms: parseInt(col(cols, "BEDS")) || 0,
+        bathrooms: parseFloat(col(cols, "BATHS")) || 0,
+        sqft: parseInt(sqftRaw) || 0,
+        url,
+        propertyType: col(cols, "PROPERTY TYPE"),
+        location: col(cols, "LOCATION"),
+        yearBuilt: parseInt(col(cols, "YEAR BUILT")) || 0,
       };
     })
     .filter(
       (l) =>
         l.address &&
         l.city &&
-        l.state &&
         l.price > 0 &&
-        l.bedrooms >= 3
+        l.bedrooms >= 4 &&
+        !l.propertyType.toLowerCase().includes("condo") &&
+        !l.propertyType.toLowerCase().includes("co-op")
     );
 }
 
-async function fetchListingDescription(url: string): Promise<string> {
-  if (!url) return "";
-  
-  try {
-    const response = await fetch(url, {
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        Accept: "text/html",
-        "Accept-Language": "en-US,en;q=0.9",
-      },
-      signal: AbortSignal.timeout(8000),
-    });
-
-    if (!response.ok) return "";
-
-    const html = await response.text();
-
-    // Extract listing description from Redfin page
-    const match =
-      html.match(/"publicRemarks"\s*:\s*"([^"]{20,})"/) ||
-      html.match(/<div[^>]*class="[^"]*description[^"]*"[^>]*>(.*?)<\/div>/s) ||
-      html.match(/class="remarks"[^>]*>(.*?)</s);
-
-    if (match) {
-      return match[1]
-        .replace(/\\n/g, " ")
-        .replace(/\\"/g, '"')
-        .replace(/<[^>]+>/g, " ")
-        .trim();
+function splitCSVLine(line: string): string[] {
+  const cols: string[] = [];
+  let inQuotes = false;
+  let current = "";
+  for (const char of line) {
+    if (char === '"') {
+      inQuotes = !inQuotes;
+    } else if (char === "," && !inQuotes) {
+      cols.push(current);
+      current = "";
+    } else {
+      current += char;
     }
-  } catch {
-    // Silently skip failed fetches
+  }
+  cols.push(current);
+  return cols;
+}
+
+// ── Metadata-Based RAL Scorer ────────────────────────────────────────────────
+
+const LOCATION_HIGH_KEYWORDS = [
+  "assisted living",
+  "memory care",
+  "adult care",
+  "senior care",
+  "elder care",
+  "skilled nursing",
+  "group home",
+];
+
+const LOCATION_MEDIUM_KEYWORDS = [
+  "in-law suite",
+  "multigenerational",
+  "multi gen",
+  "adult community",
+  "55+",
+  "age restricted",
+];
+
+function scoreFromMetadata(listing: ParsedListing): ScoreResult {
+  const signals: string[] = [];
+  let score: "HIGH" | "MEDIUM" | "LOW" | null = null;
+
+  const { bedrooms, sqft, location, yearBuilt, price } = listing;
+  const locationLower = location.toLowerCase();
+
+  if (bedrooms > 10) {
+    return { score: null, matchedKeywords: [], summary: "" };
   }
 
-  return "";
+  if (bedrooms >= 6 && sqft >= 2000) {
+    signals.push(`${bedrooms} bedrooms — meets 6-resident RAL capacity`);
+    score = "HIGH";
+  }
+
+  const highLocMatch = LOCATION_HIGH_KEYWORDS.find((kw) =>
+    locationLower.includes(kw)
+  );
+  if (highLocMatch) {
+    signals.push(`Subdivision: "${location}" (care keyword)`);
+    score = "HIGH";
+  }
+
+  if (score === "HIGH") {
+    return {
+      score,
+      matchedKeywords: signals,
+      summary: `Strong RAL candidate — ${signals.slice(0, 2).join("; ")}. Physical profile meets 6-resident capacity for Florida licensure.`,
+    };
+  }
+
+  if (bedrooms === 5 && sqft >= 2500) {
+    signals.push(`5 bed / ${sqft.toLocaleString()} sqft — 5-resident layout viable`);
+    score = "MEDIUM";
+  }
+
+  if (bedrooms === 4 && sqft >= 3500) {
+    signals.push(`4 bed / ${sqft.toLocaleString()} sqft — bonus room likely, could convert to 5th`);
+    score = "MEDIUM";
+  }
+
+  const medLocMatch = LOCATION_MEDIUM_KEYWORDS.find((kw) =>
+    locationLower.includes(kw)
+  );
+  if (medLocMatch) {
+    signals.push(`Location keyword: "${location}"`);
+    if (!score) score = "MEDIUM";
+  }
+
+  if (score === "MEDIUM") {
+    return {
+      score,
+      matchedKeywords: signals,
+      summary: `Viable RAL candidate — ${signals.slice(0, 2).join("; ")}. Verify layout and check for convertible rooms.`,
+    };
+  }
+
+  if (bedrooms >= 4 && price > 0 && sqft > 0) {
+    const pricePerSqft = price / sqft;
+    if (pricePerSqft < 100) {
+      signals.push(`$${Math.round(pricePerSqft)}/sqft — below-market, potential conversion play`);
+      score = "LOW";
+    }
+  }
+
+  if (score === "LOW") {
+    return {
+      score,
+      matchedKeywords: signals,
+      summary: `Worth a look — ${signals.slice(0, 2).join("; ")}. Lower priority but check floor plan.`,
+    };
+  }
+
+  return { score: null, matchedKeywords: [], summary: "" };
 }
+
+// ── Route Handler ────────────────────────────────────────────────────────────
 
 export async function POST(request: NextRequest) {
   try {
-    initDb();
+    await initDb();
 
     const formData = await request.formData();
     const file = formData.get("file") as File | null;
-    const cityId = formData.get("city_id") ? parseInt(formData.get("city_id") as string) : null;
+    const cityIdRaw = formData.get("city_id");
+    const cityId = cityIdRaw ? parseInt(cityIdRaw as string) : null;
 
     if (!file) {
       return NextResponse.json({ error: "No file uploaded" }, { status: 400 });
@@ -136,81 +215,103 @@ export async function POST(request: NextRequest) {
 
     if (listings.length === 0) {
       return NextResponse.json(
-        { error: "No valid listings found in CSV. Make sure it's a Redfin export." },
+        {
+          error:
+            "No valid listings found. Make sure it's a Redfin export with 4+ bed single-family homes.",
+        },
         { status: 400 }
       );
     }
 
-    const cities = getAllCities();
+    const cities = await getAllCities();
+
+    // Determine the target city for state filtering
+    const targetCity = cityId
+      ? cities.find((c) => c.id === cityId)
+      : cities[0];
+
     let matchesFound = 0;
-    const results: string[] = [];
+    let highCount = 0;
+    let mediumCount = 0;
+    let lowCount = 0;
+
+    const telegramToken = (await getSetting("telegram_token")) || "";
+    const telegramChatId = (await getSetting("telegram_chat_id")) || "";
 
     for (const listing of listings) {
-      // Try to fetch description (with rate limiting)
-      await new Promise((r) => setTimeout(r, 200));
-      const description = await fetchListingDescription(listing.url);
-
-      // If no description, build a basic one from property data
-      const baseDesc =
-        description ||
-        `${listing.bedrooms} bedroom ${listing.propertyType} in ${listing.city}, ${listing.state}.` +
-          (listing.sqft > 2500 ? " Large property suitable for multiple occupants." : "") +
-          (listing.bedrooms >= 6 ? " High bedroom count ideal for group living." : "");
-
-      const { score, matchedKeywords } = scoreDescription(baseDesc);
-
-      if (score) {
-        // Find matching city or use first city
-        const matchCity =
-          cities.find(
-            (c) =>
-              c.name.toLowerCase() === listing.city.toLowerCase() &&
-              c.state.toUpperCase() === listing.state.toUpperCase()
-          ) || cities[0];
-
-        const match = addMatch({
-          city_id: cityId || matchCity?.id || 0,
-          address: listing.address,
-          city: listing.city,
-          state: listing.state,
-          price: listing.price,
-          bedrooms: listing.bedrooms,
-          bathrooms: listing.bathrooms,
-          sqft: listing.sqft,
-          listing_url: listing.url,
-          source: "redfin-csv",
-          score,
-          matched_keywords: JSON.stringify(matchedKeywords),
-          ai_summary:
-            score === "HIGH"
-              ? `Direct care facility signals detected. ${matchedKeywords.length} primary keyword(s) found. Strong RAL candidate.`
-              : `${matchedKeywords.length} physical RAL indicators present (${matchedKeywords.slice(0, 2).join(", ")}). Worth investigating.`,
-          raw_description: baseDesc,
-          viewed: 0,
-        });
-
-        matchesFound++;
-        results.push(`${listing.address} → ${score}`);
-
-        // Telegram alert for HIGH matches
-        if (score === "HIGH") {
-          const settings = {
-            telegram_token: getSetting("telegram_token") || "",
-            telegram_chat_id: getSetting("telegram_chat_id") || "",
-          };
-          await sendTelegramAlert(match, settings);
-        }
+      // Skip listings whose state doesn't match the target city's state
+      if (
+        targetCity &&
+        listing.state &&
+        listing.state.toUpperCase() !== targetCity.state.toUpperCase()
+      ) {
+        continue;
       }
+
+      const { score, matchedKeywords, summary } = scoreFromMetadata(listing);
+
+      if (!score) continue;
+
+      // Match to city record
+      const matchCity =
+        cities.find(
+          (c) =>
+            c.name.toLowerCase() === listing.city.toLowerCase() &&
+            c.state.toUpperCase() === listing.state.toUpperCase()
+        ) || cities[0];
+
+      const match = await addMatch({
+        city_id: cityId ?? matchCity?.id ?? 0,
+        address: listing.address,
+        city: listing.city,
+        state: listing.state,
+        price: listing.price,
+        bedrooms: listing.bedrooms,
+        bathrooms: listing.bathrooms,
+        sqft: listing.sqft,
+        listing_url: listing.url,
+        source: "redfin-csv",
+        score,
+        matched_keywords: JSON.stringify(matchedKeywords),
+        ai_summary: summary,
+        raw_description: `${listing.bedrooms}bd/${listing.bathrooms}ba | ${listing.sqft.toLocaleString()} sqft | Built ${listing.yearBuilt} | ${listing.location}`,
+        description_text: "",
+        description_keywords: "[]",
+        enrich_status: "pending",
+        viewed: 0,
+      });
+
+      matchesFound++;
+      if (score === "HIGH") highCount++;
+      else if (score === "MEDIUM") mediumCount++;
+      else lowCount++;
+
+      // Telegram alert for HIGH matches only
+      if (score === "HIGH" && telegramToken && telegramChatId) {
+        await sendTelegramAlert(match, {
+          telegram_token: telegramToken,
+          telegram_chat_id: telegramChatId,
+        });
+      }
+    }
+
+    // Fire-and-forget: scrape listing descriptions in the background
+    if (matchesFound > 0) {
+      enrichPendingMatches().catch(console.error);
     }
 
     return NextResponse.json({
       success: true,
       listingsProcessed: listings.length,
       matchesFound,
-      matches: results,
+      breakdown: { high: highCount, medium: mediumCount, low: lowCount },
+      enriching: matchesFound > 0,
     });
   } catch (error) {
     console.error("Import error:", error);
-    return NextResponse.json({ error: "Import failed" }, { status: 500 });
+    return NextResponse.json(
+      { error: `Import failed: ${String(error)}` },
+      { status: 500 }
+    );
   }
 }

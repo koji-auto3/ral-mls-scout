@@ -3,8 +3,8 @@ import { initDb, getAllCities, addCity, getCityCount } from "@/lib/db";
 
 export async function GET() {
   try {
-    initDb();
-    const cities = getAllCities();
+    await initDb();
+    const cities = await getAllCities();
     return NextResponse.json(cities);
   } catch (error) {
     console.error("Cities GET error:", error);
@@ -17,10 +17,10 @@ export async function GET() {
 
 export async function POST(request: NextRequest) {
   try {
-    initDb();
+    await initDb();
 
     // Check if at max cities
-    if (getCityCount() >= 5) {
+    if ((await getCityCount()) >= 5) {
       return NextResponse.json(
         { error: "Maximum 5 cities reached" },
         { status: 400 }
@@ -37,7 +37,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const city = addCity(
+    const city = await addCity(
       name,
       state,
       price_min || 100000,

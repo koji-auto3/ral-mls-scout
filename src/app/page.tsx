@@ -19,8 +19,10 @@ interface Match {
   bathrooms: number;
   score: "HIGH" | "MEDIUM" | "LOW";
   matched_keywords: string;
+  description_keywords: string;
   ai_summary: string;
   listing_url: string;
+  enrich_status: "pending" | "done" | "failed" | "";
   created_at: string;
 }
 
@@ -33,7 +35,8 @@ export default function Dashboard() {
   });
   const [matches, setMatches] = useState<Match[]>([]);
   const [loading, setLoading] = useState(true);
-  const [scanning, setScanning] = useState(false);
+  const [page, setPage] = useState(0);
+  const PAGE_SIZE = 5;
 
   useEffect(() => {
     fetchData();
@@ -43,7 +46,7 @@ export default function Dashboard() {
     try {
       const [statsRes, matchesRes] = await Promise.all([
         fetch("/api/stats"),
-        fetch("/api/matches?limit=10"),
+        fetch("/api/matches?limit=500"),
       ]);
 
       if (statsRes.ok) {
@@ -51,6 +54,7 @@ export default function Dashboard() {
       }
       if (matchesRes.ok) {
         setMatches(await matchesRes.json());
+        setPage(0);
       }
     } catch (error) {
       console.error("Failed to fetch data:", error);
@@ -59,20 +63,19 @@ export default function Dashboard() {
     }
   }
 
-  async function handleScan() {
-    setScanning(true);
-    try {
-      const response = await fetch("/api/scan", { method: "POST" });
-      if (response.ok) {
-        await fetchData();
-        alert("Scan completed!");
-      }
-    } catch (error) {
-      console.error("Scan failed:", error);
-      alert("Scan failed. Check console for details.");
-    } finally {
-      setScanning(false);
-    }
+  // Compute next scan time: next 1:00 AM ET
+  function getNextScanTime(): string {
+    const now = new Date();
+    // 1:00 AM ET = 06:00 UTC
+    const next = new Date();
+    next.setUTCHours(6, 0, 0, 0);
+    if (next <= now) next.setUTCDate(next.getUTCDate() + 1);
+    return next.toLocaleTimeString("en-US", {
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+      timeZone: "America/New_York",
+    }) + " ET tonight";
   }
 
   return (
@@ -87,23 +90,34 @@ export default function Dashboard() {
         <StatCard label="Last Scan" value={stats.lastScan} icon="🕐" />
       </div>
 
-      {/* Scan Button */}
-      <div className="mb-8">
-        <button
-          onClick={handleScan}
-          disabled={scanning}
-          style={{
-            backgroundImage: "linear-gradient(135deg, hsl(45 100% 60%), hsl(35 100% 50%))",
-            opacity: scanning ? 0.7 : 1,
-          }}
-        >
-          {scanning ? "Scanning..." : "Scan All Cities Now"}
-        </button>
+      {/* Scan status */}
+      <div
+        className="flex items-center gap-4 mb-8 p-4 rounded-lg"
+        style={{ backgroundColor: "var(--card)", border: "1px solid var(--border)" }}
+      >
+        <div
+          className="w-2.5 h-2.5 rounded-full flex-shrink-0"
+          style={{ backgroundColor: "#22c55e", boxShadow: "0 0 6px #22c55e" }}
+        />
+        <div>
+          <p className="text-sm font-semibold">Auto-scan active</p>
+          <p className="text-xs" style={{ color: "var(--text-secondary)" }}>
+            Runs nightly · Next scan: {getNextScanTime()} · Last: {stats.lastScan}
+          </p>
+        </div>
       </div>
 
       {/* Recent Matches */}
       <div>
-        <h2 className="text-2xl font-bold mb-4">Recent Matches</h2>
+        <div className="flex justify-between items-center mb-4">
+          <h2 className="text-2xl font-bold">Recent Matches</h2>
+          {matches.length > 0 && (
+            <span className="text-sm" style={{ color: "var(--text-secondary)" }}>
+              {matches.length} total · showing {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, matches.length)}
+            </span>
+          )}
+        </div>
+
         {matches.length === 0 ? (
           <div
             className="rounded-lg p-8 text-center"
@@ -114,11 +128,24 @@ export default function Dashboard() {
             </p>
           </div>
         ) : (
-          <div className="space-y-4">
-            {matches.map((match) => (
-              <MatchCard key={match.id} match={match} />
-            ))}
-          </div>
+          <>
+            <div className="space-y-4 mb-4">
+              {matches.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE).map((match) => (
+                <MatchCard key={match.id} match={match} />
+              ))}
+            </div>
+
+            {/* Pagination controls */}
+            {matches.length > PAGE_SIZE && (
+              <Pagination
+                page={page}
+                totalPages={Math.ceil(matches.length / PAGE_SIZE)}
+                totalItems={matches.length}
+                pageSize={PAGE_SIZE}
+                onPageChange={setPage}
+              />
+            )}
+          </>
         )}
       </div>
     </div>
@@ -168,7 +195,8 @@ function MatchCard({ match }: { match: Match }) {
   const scoreTxColor =
     match.score === "HIGH" ? "var(--primary-foreground)" : "var(--foreground)";
 
-  const keywords = JSON.parse(match.matched_keywords || "[]");
+  const structuralKeywords: string[] = JSON.parse(match.matched_keywords || "[]");
+  const descriptionKeywords: string[] = JSON.parse(match.description_keywords || "[]");
 
   return (
     <div
@@ -201,25 +229,43 @@ function MatchCard({ match }: { match: Match }) {
         <span>{match.bedrooms}bd / {match.bathrooms}ba</span>
       </div>
 
-      <div className="flex gap-2 flex-wrap mb-3">
-        {keywords.map((kw: string, idx: number) => (
-          <span
-            key={idx}
-            className="text-xs px-2 py-1 rounded border"
-            style={{
-              backgroundColor: "var(--surface-elevated)",
-              borderColor: "var(--primary)",
-              color: "var(--primary)",
-            }}
-          >
-            {kw}
-          </span>
-        ))}
-      </div>
+      {/* Physical Match tags */}
+      {structuralKeywords.length > 0 && (
+        <div className="flex gap-2 flex-wrap mb-3">
+          {structuralKeywords.map((kw, idx) => (
+            <span
+              key={idx}
+              className="text-xs px-2 py-1 rounded border font-medium"
+              style={{
+                backgroundColor: "var(--surface-elevated)",
+                borderColor: "var(--border)",
+                color: "var(--text-secondary)",
+              }}
+            >
+              {kw}
+            </span>
+          ))}
+        </div>
+      )}
 
-      <p style={{ color: "var(--text-tertiary)" }} className="text-sm italic mb-3">
-        {match.ai_summary}
-      </p>
+      {/* Listing Signals tags */}
+      {descriptionKeywords.length > 0 && (
+        <div className="flex gap-2 flex-wrap mb-3">
+          {descriptionKeywords.map((kw, idx) => (
+            <span
+              key={idx}
+              className="text-xs px-2 py-1 rounded font-semibold"
+              style={{
+                backgroundColor: "rgba(234,179,8,0.15)",
+                border: "1px solid rgba(234,179,8,0.5)",
+                color: "#ca8a04",
+              }}
+            >
+              ✦ {kw}
+            </span>
+          ))}
+        </div>
+      )}
 
       <a
         href={match.listing_url}
@@ -230,6 +276,105 @@ function MatchCard({ match }: { match: Match }) {
       >
         View Listing →
       </a>
+    </div>
+  );
+}
+
+function Pagination({
+  page,
+  totalPages,
+  totalItems,
+  pageSize,
+  onPageChange,
+}: {
+  page: number;
+  totalPages: number;
+  totalItems: number;
+  pageSize: number;
+  onPageChange: (p: number) => void;
+}) {
+  const [inputVal, setInputVal] = useState(String(page + 1));
+
+  // Keep input in sync when page changes externally
+  useEffect(() => {
+    setInputVal(String(page + 1));
+  }, [page]);
+
+  function handleInputCommit() {
+    const parsed = parseInt(inputVal, 10);
+    if (!isNaN(parsed) && parsed >= 1 && parsed <= totalPages) {
+      onPageChange(parsed - 1);
+    } else {
+      setInputVal(String(page + 1));
+    }
+  }
+
+  const btnStyle = (disabled: boolean): React.CSSProperties => ({
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    width: 32,
+    height: 32,
+    borderRadius: 4,
+    border: "1px solid var(--border)",
+    backgroundColor: "var(--card)",
+    color: disabled ? "var(--text-tertiary)" : "var(--foreground)",
+    cursor: disabled ? "not-allowed" : "pointer",
+    opacity: disabled ? 0.4 : 1,
+    fontSize: 14,
+    fontWeight: 600,
+    userSelect: "none",
+  });
+
+  const rangeStart = page * pageSize + 1;
+  const rangeEnd = Math.min((page + 1) * pageSize, totalItems);
+
+  return (
+    <div
+      className="flex items-center justify-center gap-2 mt-6 pt-4"
+      style={{ borderTop: "1px solid var(--border)" }}
+    >
+      {/* First page */}
+      <button style={btnStyle(page === 0)} disabled={page === 0} onClick={() => onPageChange(0)} title="First page">
+        ⏮
+      </button>
+
+      {/* Prev page */}
+      <button style={btnStyle(page === 0)} disabled={page === 0} onClick={() => onPageChange(page - 1)} title="Previous page">
+        ‹
+      </button>
+
+      {/* Page input */}
+      <div className="flex items-center gap-2" style={{ color: "var(--text-secondary)", fontSize: 14 }}>
+        <input
+          type="text"
+          value={inputVal}
+          onChange={(e) => setInputVal(e.target.value)}
+          onBlur={handleInputCommit}
+          onKeyDown={(e) => e.key === "Enter" && handleInputCommit()}
+          style={{
+            width: 52,
+            textAlign: "center",
+            padding: "4px 6px",
+            borderRadius: 4,
+            border: "1px solid var(--border)",
+            backgroundColor: "var(--card)",
+            color: "var(--foreground)",
+            fontSize: 14,
+          }}
+        />
+        <span>to {rangeEnd} of {totalItems}</span>
+      </div>
+
+      {/* Next page */}
+      <button style={btnStyle(page >= totalPages - 1)} disabled={page >= totalPages - 1} onClick={() => onPageChange(page + 1)} title="Next page">
+        ›
+      </button>
+
+      {/* Last page */}
+      <button style={btnStyle(page >= totalPages - 1)} disabled={page >= totalPages - 1} onClick={() => onPageChange(totalPages - 1)} title="Last page">
+        ⏭
+      </button>
     </div>
   );
 }

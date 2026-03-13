@@ -11,3 +11,4 @@ data/
 .idea/
 *.swp
 *.swo
+.vercel
