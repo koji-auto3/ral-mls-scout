@@ -38,6 +38,15 @@ export default function Dashboard() {
   const [page, setPage] = useState(0);
   const PAGE_SIZE = 5;
 
+  // Only show listings with listing signals (description_keywords) on the dashboard
+  const signalMatches = matches.filter((m) => {
+    try {
+      return JSON.parse(m.description_keywords || "[]").length > 0;
+    } catch {
+      return false;
+    }
+  });
+
   useEffect(() => {
     fetchData();
   }, []);
@@ -107,40 +116,47 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Recent Matches */}
+      {/* Recent Matches — listings with signals only */}
       <div>
         <div className="flex justify-between items-center mb-4">
-          <h2 className="text-2xl font-bold">Recent Matches</h2>
-          {matches.length > 0 && (
+          <div>
+            <h2 className="text-2xl font-bold">Listing Signal Matches</h2>
+            <p className="text-sm mt-0.5" style={{ color: "var(--text-secondary)" }}>
+              Properties with keywords in the listing description
+            </p>
+          </div>
+          {signalMatches.length > 0 && (
             <span className="text-sm" style={{ color: "var(--text-secondary)" }}>
-              {matches.length} total · showing {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, matches.length)}
+              {signalMatches.length} with signals · showing {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, signalMatches.length)}
             </span>
           )}
         </div>
 
-        {matches.length === 0 ? (
+        {signalMatches.length === 0 ? (
           <div
             className="rounded-lg p-8 text-center"
             style={{ backgroundColor: "var(--card)" }}
           >
             <p style={{ color: "var(--text-tertiary)" }}>
-              No matches yet. Add cities and run a scan to get started.
+              {matches.length === 0
+                ? "No matches yet. Add cities and run a scan to get started."
+                : `${matches.length} matches scanned — none have listing signals yet. Enrichment will pick them up.`}
             </p>
           </div>
         ) : (
           <>
             <div className="space-y-4 mb-4">
-              {matches.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE).map((match) => (
+              {signalMatches.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE).map((match) => (
                 <MatchCard key={match.id} match={match} />
               ))}
             </div>
 
             {/* Pagination controls */}
-            {matches.length > PAGE_SIZE && (
+            {signalMatches.length > PAGE_SIZE && (
               <Pagination
                 page={page}
-                totalPages={Math.ceil(matches.length / PAGE_SIZE)}
-                totalItems={matches.length}
+                totalPages={Math.ceil(signalMatches.length / PAGE_SIZE)}
+                totalItems={signalMatches.length}
                 pageSize={PAGE_SIZE}
                 onPageChange={setPage}
               />
