@@ -20,9 +20,12 @@
  */
 
 const fs = require("fs");
+const path = require("path");
 const { addExtra } = require("playwright-extra");
 const { chromium } = require("/home/henry/projects/jobber-quote-builder/node_modules/playwright");
 const StealthPlugin = require("puppeteer-extra-plugin-stealth");
+
+const USER_DATA_DIR = path.join(__dirname, "../data/browser-profile");
 
 const APP_BASE = "https://ral-mls-scout.vercel.app";
 
@@ -48,7 +51,7 @@ const CITY_CONFIG = {
 
 function buildCsvUrl(conf) {
   const params = [
-    "al=3",
+    "al=1",
     "has_att_fiber=false", "has_deal=false", "has_dishwasher=false",
     "has_laundry_facility=false", "has_laundry_hookups=false",
     "has_parking=false", "has_pool=false", "has_short_term_lease=false",
@@ -74,123 +77,163 @@ function buildCsvUrl(conf) {
   return `https://www.redfin.com/stingray/api/gis-csv?${params}`;
 }
 
-async function scanCity(cityKey, conf) {
-  console.log(`\n── Scanning: ${conf.slug} (market: ${conf.market}) ──`);
+function randomDelay(min, max) {
+  return new Promise(r => setTimeout(r, min + Math.random() * (max - min)));
+}
 
-  const stealthChromium = addExtra(chromium);
-  stealthChromium.use(StealthPlugin());
-
-  const browser = await stealthChromium.launch({
-    headless: true,
-    args: ["--no-sandbox", "--disable-setuid-sandbox"],
-  });
-
+async function scanCityPlaywright(conf, context) {
+  const page = await context.newPage();
   try {
-    const context = await browser.newContext({
-      userAgent:
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-      viewport: { width: 1920, height: 1080 },
-    });
-
-    const page = await context.newPage();
-
-    // Navigate to the city's filtered page (establishes session + cookies)
     const cityUrl = `https://www.redfin.com/city/${conf.cityId}/FL/${conf.slug}/filter/min-beds=4`;
-    console.log(`  Navigating to ${cityUrl}...`);
+    console.log(`  [playwright] Navigating to ${conf.slug} city page...`);
 
-    await page.goto(cityUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
-    await page.waitForTimeout(2000 + Math.random() * 1500);
+    await page.goto(cityUrl, { waitUntil: "domcontentloaded", timeout: 45000 });
+
+    // Human-like: random pause after load
+    await randomDelay(2500, 5000);
 
     if (page.url().includes("ratelimited")) {
-      console.warn(`  Rate limited by Redfin`);
-      return { success: false, error: "rate_limited" };
+      throw new Error("rate_limited");
     }
 
-    // Check if we need to log in
-    const isLoggedIn = await page.evaluate(() => {
-      // Redfin shows account menu when logged in
-      return (
-        document.querySelector('[class*="accountMenu"], [class*="signIn"]') !== null ||
-        document.cookie.includes("RF_AUTH")
-      );
-    });
-    console.log(`  Session: ${isLoggedIn ? "active" : "may need login"}`);
-
-    // Fetch CSV using the session (Redfin cookies included automatically)
-    const csvUrl = buildCsvUrl(conf);
-    console.log(`  Fetching CSV...`);
-
-    const result = await page.evaluate(async ({ csvUrl, importUrl, cityId }) => {
-      // Step 1: Fetch CSV from Redfin (uses browser session cookies)
-      const csvRes = await fetch(csvUrl, { credentials: "include" });
-      const csvText = await csvRes.text();
-      const rows = csvText.split("\n").filter((l) => l.startsWith("MLS")).length;
-
-      if (rows === 0) {
-        return { success: false, error: "no_rows", csvStatus: csvRes.status, preview: csvText.slice(0, 200) };
+    // Human-like: scroll down slowly
+    await page.evaluate(async () => {
+      for (let y = 0; y < 600; y += 80) {
+        window.scrollTo(0, y);
+        await new Promise(r => setTimeout(r, 120 + Math.random() * 80));
       }
+    });
+    await randomDelay(800, 1800);
 
-      // Step 2: POST to Vercel import API using no-cors (bypasses Redfin's CSP)
-      const blob = new Blob([csvText], { type: "text/csv" });
-      const fd = new FormData();
-      fd.append("file", blob, "redfin-export.csv");
-      fd.append("city_id", String(cityId));
+    // Human-like: move mouse around the map area
+    await page.mouse.move(400 + Math.random() * 200, 300 + Math.random() * 150);
+    await randomDelay(300, 700);
+    await page.mouse.move(500 + Math.random() * 150, 400 + Math.random() * 100);
+    await randomDelay(500, 1200);
 
-      await fetch(importUrl, { method: "POST", body: fd, mode: "no-cors" });
+    // Fetch CSV using browser session (cookies sent automatically, same origin)
+    const csvUrl = buildCsvUrl(conf);
+    console.log(`  [playwright] Fetching CSV...`);
 
-      return { success: true, rows };
-    }, { csvUrl, importUrl: `${APP_BASE}/api/import`, cityId: conf.appCityId });
+    const csvText = await page.evaluate(async ({ csvUrl }) => {
+      const res = await fetch(csvUrl, { credentials: "include" });
+      return res.text();
+    }, { csvUrl });
 
-    if (result.success) {
-      console.log(`  ✓ Fetched ${result.rows} listings, import sent`);
-    } else {
-      console.warn(`  ✗ Failed: ${result.error}`, result.preview || "");
-    }
+    const rows = csvText.split("\n").filter(l => l.trim() && !l.startsWith("SALE TYPE")).length;
+    if (rows === 0) throw new Error(`no_rows: ${csvText.slice(0, 150)}`);
 
-    return result;
-  } catch (err) {
-    console.error(`  ERROR: ${err.message}`);
-    return { success: false, error: err.message };
+    return csvText;
   } finally {
-    await browser.close();
+    await page.close();
   }
+}
+
+async function scanCityApi(conf, context) {
+  console.log(`  [api fallback] Fetching CSV directly...`);
+  const cookies = await context.cookies("https://www.redfin.com");
+  const cookieHeader = cookies.map(c => `${c.name}=${c.value}`).join("; ");
+  const csvUrl = buildCsvUrl(conf);
+
+  const res = await fetch(csvUrl, {
+    headers: {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+      "Cookie": cookieHeader,
+      "Referer": "https://www.redfin.com/",
+      "Accept": "text/csv,*/*",
+    },
+  });
+  const csvText = await res.text();
+  const rows = csvText.split("\n").filter(l => l.trim() && !l.startsWith("SALE TYPE")).length;
+  if (rows === 0) throw new Error(`no_rows: ${csvText.slice(0, 150)}`);
+  return csvText;
+}
+
+async function scanCity(cityKey, conf, context) {
+  console.log(`\n── Scanning: ${conf.slug} (market: ${conf.market}) ──`);
+
+  let csvText;
+
+  // Try Playwright first (human-like), fall back to direct API
+  try {
+    csvText = await scanCityPlaywright(conf, context);
+    console.log(`  ✓ Playwright succeeded`);
+  } catch (playwrightErr) {
+    console.warn(`  ⚠ Playwright failed (${playwrightErr.message.split("\n")[0]}) — falling back to API`);
+    try {
+      csvText = await scanCityApi(conf, context);
+      console.log(`  ✓ API fallback succeeded`);
+    } catch (apiErr) {
+      console.error(`  ✗ Both methods failed: ${apiErr.message.split("\n")[0]}`);
+      return { success: false, error: apiErr.message };
+    }
+  }
+
+  // POST CSV to Vercel import API
+  const rows = csvText.split("\n").filter(l => l.trim() && !l.startsWith("SALE TYPE")).length;
+  const blob = new Blob([csvText], { type: "text/csv" });
+  const fd = new FormData();
+  fd.append("file", blob, "redfin-export.csv");
+  fd.append("city_id", String(conf.appCityId));
+
+  await fetch(`${APP_BASE}/api/import`, { method: "POST", body: fd });
+
+  console.log(`  ✓ ${rows} listings imported`);
+  return { success: true, rows };
 }
 
 async function main() {
   console.log("RAL Scout Auto-Scanner starting...\n");
 
-  const cities = await fetch(`${APP_BASE}/api/cities`)
-    .then((r) => r.json())
-    .then((all) => all.filter((c) => c.active === 1));
+  // Ensure profile dir exists
+  fs.mkdirSync(USER_DATA_DIR, { recursive: true });
 
-  console.log(`Active cities: ${cities.length}\n`);
+  const stealthChromium = addExtra(chromium);
+  stealthChromium.use(StealthPlugin());
 
-  let totalImported = 0;
+  const context = await stealthChromium.launchPersistentContext(USER_DATA_DIR, {
+    headless: true,
+    args: ["--no-sandbox", "--disable-setuid-sandbox"],
+    userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    viewport: { width: 1920, height: 1080 },
+  });
 
-  for (let i = 0; i < cities.length; i++) {
-    const city = cities[i];
-    const key = `${city.name.toLowerCase()},${city.state.toLowerCase()}`;
-    const conf = CITY_CONFIG[key];
+  try {
+    const cities = await fetch(`${APP_BASE}/api/cities`)
+      .then((r) => r.json())
+      .then((all) => all.filter((c) => c.active === 1));
 
-    if (!conf) {
-      console.log(`\n── ${city.name}, ${city.state}: No config — skipping ──`);
-      continue;
+    console.log(`Active cities: ${cities.length}\n`);
+
+    let totalImported = 0;
+
+    for (let i = 0; i < cities.length; i++) {
+      const city = cities[i];
+      const key = `${city.name.toLowerCase()},${city.state.toLowerCase()}`;
+      const conf = CITY_CONFIG[key];
+
+      if (!conf) {
+        console.log(`\n── ${city.name}, ${city.state}: No config — skipping ──`);
+        continue;
+      }
+
+      conf.appCityId = city.id;
+
+      const result = await scanCity(key, conf, context);
+      if (result.success) totalImported += result.rows || 0;
+
+      if (i < cities.length - 1) {
+        console.log(`  Waiting 5s before next city...`);
+        await new Promise((r) => setTimeout(r, 5000));
+      }
     }
 
-    conf.appCityId = city.id; // Use DB ID in case it changed
-
-    const result = await scanCity(key, conf);
-    if (result.success) totalImported += result.rows || 0;
-
-    if (i < cities.length - 1) {
-      console.log(`  Waiting 5s before next city...`);
-      await new Promise((r) => setTimeout(r, 5000));
-    }
+    console.log(`\n=== Scan complete ===`);
+    console.log(`Listings sent to import: ${totalImported}`);
+    console.log(`Timestamp: ${new Date().toISOString()}\n`);
+  } finally {
+    await context.close();
   }
-
-  console.log(`\n=== Scan complete ===`);
-  console.log(`Listings sent to import: ${totalImported}`);
-  console.log(`Timestamp: ${new Date().toISOString()}\n`);
 }
 
 main().catch((err) => {

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { initDb, getAllCities, addMatch, getSetting } from "@/lib/db";
+import { initDb, getAllCities, addMatch, getSetting, updateCityLastScanned } from "@/lib/db";
 import { sendTelegramAlert } from "@/lib/notifier";
 import { enrichPendingMatches } from "@/lib/enricher";
 
@@ -293,6 +293,11 @@ export async function POST(request: NextRequest) {
           telegram_chat_id: telegramChatId,
         });
       }
+    }
+
+    // Update last_scanned timestamp for this city
+    if (cityId) {
+      await updateCityLastScanned(cityId, listings.length);
     }
 
     // Fire-and-forget: scrape listing descriptions in the background
